@@ -6,3 +6,4 @@ main.ahk
 dist/
 release/
 tools/*.png
+stats/
