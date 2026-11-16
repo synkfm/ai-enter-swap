@@ -1,30 +1,50 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
-;@Ahk2Exe-SetName Claude Enter Swap
-;@Ahk2Exe-SetDescription Claudeの入力欄で Enter=改行 / Shift+Enter=送信 にする
-;@Ahk2Exe-SetVersion 1.2.0
-;@Ahk2Exe-SetProductVersion 1.2.0
-;@Ahk2Exe-SetOrigFilename ClaudeEnterSwap.exe
+;@Ahk2Exe-SetName AI Enter Swap
+;@Ahk2Exe-SetDescription AIチャットの入力欄で Enter=改行 / Shift+Enter=送信 にする（非公式ツール）
+;@Ahk2Exe-SetVersion 2.0.0
+;@Ahk2Exe-SetProductVersion 2.0.0
+;@Ahk2Exe-SetOrigFilename AIEnterSwap.exe
 ;@Ahk2Exe-SetMainIcon src\icon.ico
 
 ; =====================================================================
-;  Claude Enter Swap
-;  Claude（デスクトップアプリ / ブラウザの claude.ai）を使っているときだけ
+;  AI Enter Swap（旧名 Claude Enter Swap）
+;  AIチャット（Claude / ChatGPT / Codex / Gemini / Copilot）を使っているときだけ
 ;    Enter        → 改行
 ;    Shift+Enter  → 送信
-;  に入れ替える。
+;  に入れ替える。対象はトレイメニューで1つずつオン／オフできる。
 ;
 ;  変換中の Enter も裏では Shift+Enter として IME に届くため、
 ;  IME 側を「変換中の Shift+Enter ＝ 確定」に設定しておく必要がある。
 ;  その設定を、Google日本語入力 / Microsoft IME の両方について自動で行う。
 ; =====================================================================
 
-APP_NAME    := "Claude Enter Swap"
-APP_VERSION := "1.2.0"
-DATA_DIR    := A_AppData "\ClaudeEnterSwap"
+APP_NAME    := "AI Enter Swap"
+APP_VERSION := "2.0.0"
+DATA_DIR    := A_AppData "\AIEnterSwap"
 SETTINGS    := DATA_DIR "\settings.ini"
 STARTUP_LNK := A_Startup "\" APP_NAME ".lnk"
 BROWSERS    := ",chrome.exe,msedge.exe,firefox.exe,brave.exe,vivaldi.exe,opera.exe,"
+; ターミナル（黒い画面）では Shift+Enter が Enter と区別されないことが多いので、対象にしない
+CONSOLE_CLASSES := ",ConsoleWindowClass,CASCADIA_HOSTING_WINDOW_CLASS,PseudoConsoleWindow,mintty,VirtualConsoleClass,"
+
+; 旧名（Claude Enter Swap 1.x）からの引っ越し用
+OLD_EXE         := "ClaudeEnterSwap.exe"
+OLD_DATA_DIR    := A_AppData "\ClaudeEnterSwap"
+OLD_STARTUP_LNK := A_Startup "\Claude Enter Swap.lnk"
+
+; 対象のAI
+;   exes  … デスクトップアプリのプロセス名
+;   hosts … ブラウザで開いたときのアドレス（ドメイン）
+;   Claude のブラウザ版だけは、従来どおりタブのタイトルで判定する
+TARGETS := [
+    {key: "claude",  label: "Claude（アプリ・ブラウザ）",  exes: ",claude.exe,",     hosts: ""},
+    ; ChatGPT のデスクトップアプリは Codex と1つにまとまっている（プロセス名 ChatGPT.exe、旧Codexアプリは Codex.exe）
+    {key: "chatgpt", label: "ChatGPT / Codex（アプリ・ブラウザ）", exes: ",chatgpt.exe,codex.exe,", hosts: "^(www\.)?chatgpt\.com$|^chat\.openai\.com$"},
+    {key: "gemini",  label: "Gemini（アプリ・ブラウザ）",  exes: ",gemini.exe,",     hosts: "^gemini\.google\.com$"},
+    {key: "copilot", label: "Copilot（アプリ・ブラウザ）", exes: ",copilotapp.exe,", hosts: "^copilot\.microsoft\.com$|^(www\.)?copilot\.com$"},
+]
+targetOn := Map()
 
 ; --- Google日本語入力 ---
 GIME_CFG    := EnvGet("USERPROFILE") "\AppData\LocalLow\Google\Google Japanese Input\config1.db"
@@ -62,48 +82,226 @@ if (A_Args.Length = 3 && SubStr(A_Args[1], 1, 10) = "--selftest") {
 }
 
 enabled := true
+upgraded := MigrateFromOldName()
 DirCreate(DATA_DIR)
 WarnIfTempDir()
+LoadTargets()
 SetupTray()
+if upgraded
+    ShowUpgradeNotice()
 FirstRunCheck()
 
 ; ---------------------------------------------------------------------
-;  キーの入れ替え（Claudeが前面にあるときだけ有効）
+;  キーの入れ替え（対象のAIが前面にあるときだけ有効）
 ; ---------------------------------------------------------------------
-#HotIf IsClaudeActive()
+#HotIf IsTargetActive()
 $Enter::Send "+{Enter}"
 $NumpadEnter::Send "+{Enter}"
 $+Enter::Send "{Enter}"
 $+NumpadEnter::Send "{Enter}"
 #HotIf
 
-IsClaudeActive(*) {
-    global enabled, BROWSERS
+IsTargetActive(*) {
+    global enabled, BROWSERS, CONSOLE_CLASSES, TARGETS, targetOn
     if !enabled
         return false
     try {
-        exe := StrLower(WinGetProcessName("A"))
-        if (exe = "claude.exe")
+        hwnd := WinExist("A")
+        if InStr(CONSOLE_CLASSES, "," WinGetClass(hwnd) ",")
+            return false
+        exe := StrLower(WinGetProcessName(hwnd))
+        for t in TARGETS
+            if targetOn[t.key] && t.exes != "" && InStr(t.exes, "," exe ",")
+                return true
+        if !InStr(BROWSERS, "," exe ",")
+            return false
+
+        ; claude.ai のタブのタイトルは「Claude」または「(会話名) - Claude」
+        title := WinGetTitle(hwnd)
+        byTitle := targetOn["claude"] && RegExMatch(title, "(^| - )Claude( - | と|$)") > 0
+        needUrl := false
+        for t in TARGETS
+            if targetOn[t.key] && t.hosts != ""
+                needUrl := true
+        if !(byTitle || needUrl)
+            return false
+
+        info := BrowserInfo(hwnd, title, needUrl)
+        if info.inAddressBar        ; アドレス欄で Enter を押したときは入れ替えない
+            return false
+        if byTitle
             return true
-        if InStr(BROWSERS, "," exe ",") {
-            ; claude.ai のタブのタイトルは「Claude」または「(会話名) - Claude」
-            title := WinGetTitle("A")
-            return RegExMatch(title, "(^| - )Claude( - | と|$)") > 0
-        }
+        for t in TARGETS
+            if targetOn[t.key] && t.hosts != "" && info.host != "" && RegExMatch(info.host, t.hosts)
+                return true
     }
     return false
+}
+
+; ---------------------------------------------------------------------
+;  ブラウザのアドレス欄を読む（Windows の「UI オートメーション」という
+;  読み上げソフトなどが使う仕組みで、アドレス欄の文字を読むだけ）
+;    host         … 開いているページのドメイン（例: chatgpt.com）
+;    inAddressBar … いまアドレス欄に文字を打っているところか
+;  ドメインは「ウィンドウ＋タブのタイトル」ごとに覚えておき、毎回は読まない
+; ---------------------------------------------------------------------
+BrowserInfo(hwnd, title, needUrl) {
+    static cache := Map()
+    res := {host: "", inAddressBar: false}
+    edit := 0
+    try {
+        uia := UiaInit()
+        edit := UiaAddressBar(uia, hwnd)
+        if !edit
+            return res
+        ComCall(8, uia, "Ptr*", &focused := 0)                      ; GetFocusedElement
+        if focused {
+            ComCall(3, uia, "Ptr", focused, "Ptr", edit, "Int*", &same := 0)  ; CompareElements
+            ObjRelease(focused)
+            if same {
+                res.inAddressBar := true
+                return res
+            }
+        }
+        if !needUrl
+            return res
+        k := hwnd "|" title
+        if cache.Has(k) {
+            res.host := cache[k]
+            return res
+        }
+        r := Buffer(24, 0)
+        ComCall(10, edit, "Int", 30045, "Ptr", r)                  ; GetCurrentPropertyValue(Value)
+        url := ""
+        if NumGet(r, "UShort") = 8 {                                ; VT_BSTR
+            p := NumGet(r, 8, "Ptr")
+            url := StrGet(p)
+            DllCall("OleAut32\SysFreeString", "Ptr", p)
+        }
+        host := StrLower(RegExReplace(url, "^[a-zA-Z][a-zA-Z0-9+.\-]*://"))
+        host := RegExReplace(host, "[/?#:].*$")
+        if cache.Count > 200
+            cache.Clear()
+        cache[k] := host
+        res.host := host
+    } finally {
+        if edit
+            ObjRelease(edit)
+    }
+    return res
+}
+
+UiaInit() {
+    static uia := 0
+    if !uia
+        uia := ComObject("{ff48dba4-60ef-4201-aa87-54103eef594e}", "{30cbe57d-d9d0-452a-ab13-7ac5ac4825ee}")
+    return uia
+}
+
+; ウィンドウの中で最初に見つかる入力欄（ブラウザではアドレス欄）。使い終わったら ObjRelease する
+UiaAddressBar(uia, hwnd) {
+    static cond := 0
+    if !cond {
+        v := Buffer(24, 0)
+        NumPut("UShort", 3, v), NumPut("Int", 50004, v, 8)        ; VT_I4, ControlType = Edit
+        ComCall(23, uia, "Int", 30003, "Ptr", v, "Ptr*", &cond)     ; CreatePropertyCondition
+    }
+    ComCall(6, uia, "Ptr", hwnd, "Ptr*", &root := 0)              ; ElementFromHandle
+    edit := 0
+    try ComCall(5, root, "Int", 4, "Ptr", cond, "Ptr*", &edit)      ; FindFirst(子孫から)
+    finally ObjRelease(root)
+    return edit
+}
+
+; ---------------------------------------------------------------------
+;  対象のAI（設定ファイルに保存）
+; ---------------------------------------------------------------------
+LoadTargets() {
+    global SETTINGS, TARGETS, targetOn
+    ; 1.x から更新した人は、今までどおり Claude だけを対象にしておく
+    fromOld := IniRead(SETTINGS, "general", "asked", "0") = "1"
+        && IniRead(SETTINGS, "targets", "claude", "") = ""
+    ; 2.0.0 の試作版にあった「Codex」の項目は「ChatGPT / Codex」にまとめた
+    if IniRead(SETTINGS, "targets", "codex", "") != "" {
+        if IniRead(SETTINGS, "targets", "codex", "0") = "1"
+            IniWrite("1", SETTINGS, "targets", "chatgpt")
+        IniDelete(SETTINGS, "targets", "codex")
+    }
+    for t in TARGETS {
+        def := (fromOld && t.key != "claude") ? "0" : "1"
+        v := IniRead(SETTINGS, "targets", t.key, def)
+        targetOn[t.key] := (v = "1")
+        IniWrite(targetOn[t.key] ? "1" : "0", SETTINGS, "targets", t.key)
+    }
+}
+
+ToggleTarget(key, name, *) {
+    global SETTINGS, targetOn, APP_NAME
+    targetOn[key] := !targetOn[key]
+    IniWrite(targetOn[key] ? "1" : "0", SETTINGS, "targets", key)
+    if targetOn[key]
+        TargetMenu().Check(name)
+    else
+        TargetMenu().Uncheck(name)
+    TrayTip(name (targetOn[key] ? " を対象にしました" : " を対象から外しました"), APP_NAME)
+}
+
+TargetMenu() {
+    static m := Menu()
+    return m
+}
+
+; 旧名 Claude Enter Swap（1.x）からの引っ越し。引っ越した場合は true
+MigrateFromOldName() {
+    global OLD_EXE, OLD_DATA_DIR, OLD_STARTUP_LNK, DATA_DIR, STARTUP_LNK
+    moved := false
+    ; 古いほうが動いたままだと、入れ替えが2回かかって元に戻ってしまう
+    while A_ScriptName != OLD_EXE && ProcessExist(OLD_EXE) && A_Index <= 5 {
+        ProcessClose(OLD_EXE)
+        Sleep 200
+    }
+    if DirExist(OLD_DATA_DIR) && !DirExist(DATA_DIR) {
+        try {
+            DirMove(OLD_DATA_DIR, DATA_DIR)
+            moved := true
+        }
+    }
+    if FileExist(OLD_STARTUP_LNK) {
+        try FileDelete(OLD_STARTUP_LNK)
+        try FileCreateShortcut(A_ScriptFullPath, STARTUP_LNK, A_ScriptDir)
+        moved := true
+    }
+    return moved
+}
+
+ShowUpgradeNotice() {
+    global APP_NAME, OLD_EXE
+    MsgBox("「Claude Enter Swap」は「" APP_NAME "」に名前が変わりました。`n`n"
+        . "・設定とバックアップは、そのまま引き継ぎました。`n"
+        . "・今までどおり、対象は Claude だけになっています。`n"
+        . "・ChatGPT・Codex・Gemini・Copilot でも使いたいときは、`n"
+        . "　画面右下のアイコンを右クリック →「対象のアプリ」から選んでください。`n`n"
+        . "古い " OLD_EXE " は、もう使いません。フォルダごと削除してかまいません。",
+        APP_NAME, "Iconi")
 }
 
 ; ---------------------------------------------------------------------
 ;  タスクトレイ（画面右下）のメニュー
 ; ---------------------------------------------------------------------
 SetupTray() {
-    global APP_NAME, STARTUP_LNK
+    global APP_NAME, STARTUP_LNK, TARGETS, targetOn
     A_IconTip := APP_NAME "（有効）"
     tm := A_TrayMenu
     tm.Delete()
     tm.Add("有効", ToggleEnabled)
     tm.Check("有効")
+    sub := TargetMenu()
+    for t in TARGETS {
+        sub.Add(t.label, ToggleTarget.Bind(t.key))
+        if targetOn[t.key]
+            sub.Check(t.label)
+    }
+    tm.Add("対象のアプリ", sub)
     tm.Add()
     tm.Add("日本語入力（IME）の設定を調整する", (*) => ChooseAndApply(false))
     tm.Add("日本語入力（IME）の設定を元に戻す", (*) => RestoreAll())
@@ -125,7 +323,7 @@ WarnIfTempDir() {
         MsgBox("zipファイルの中から直接起動しているようです。`n`n"
             . "このままだと「Windows起動時に自動で起動する」がうまく動きません。`n"
             . "いったん終了して、zipを右クリック →「すべて展開」で取り出してから、`n"
-            . "取り出したフォルダの ClaudeEnterSwap.exe を起動してください。",
+            . "取り出したフォルダの AIEnterSwap.exe を起動してください。",
             APP_NAME, "Icon!")
     }
 }
@@ -157,24 +355,22 @@ ToggleStartup(name, *) {
 }
 
 ShowHelp() {
-    global APP_NAME, APP_VERSION
-    MsgBox(
-    (
-    "Claude を使っているときだけ、キーの動きを入れ替えます。
-
-      Enter          → 改行
-      Shift + Enter  → 送信
-
-    対象：Claude デスクトップアプリ、ブラウザで開いた claude.ai
-    （それ以外のアプリでは、いつもどおりの動きです）
-
-    日本語の変換中は、Enter でも Shift + Enter でも「確定」になります。
-    （そのために、日本語入力（IME）の設定を1か所だけ変えています）
-
-    画面右下のアイコンを右クリックすると、
-    一時停止・自動起動・IMEの設定を元に戻す、などができます。
-    （アイコンが見えないときは、右下の「^」を押すと出てきます）"
-    ), APP_NAME " " APP_VERSION, "Iconi")
+    global APP_NAME, APP_VERSION, TARGETS, targetOn
+    list := ""
+    for t in TARGETS
+        list .= "      " (targetOn[t.key] ? "✓ " : "　 ") t.label "`n"
+    MsgBox("AIチャットを使っているときだけ、キーの動きを入れ替えます。`n`n"
+        . "      Enter          → 改行`n"
+        . "      Shift + Enter  → 送信`n`n"
+        . "いまの対象（✓が付いているもの）：`n" list
+        . "（それ以外のアプリや、ターミナル（黒い画面）では、いつもどおりの動きです）`n`n"
+        . "日本語の変換中は、Enter でも Shift + Enter でも「確定」になります。`n"
+        . "（そのために、日本語入力（IME）の設定を1か所だけ変えています）`n`n"
+        . "画面右下のアイコンを右クリックすると、`n"
+        . "対象のアプリの選択・一時停止・自動起動・IMEの設定を元に戻す、などができます。`n"
+        . "（アイコンが見えないときは、右下の「^」を押すと出てきます）`n`n"
+        . "※個人が作った非公式のツールです。各AIの提供会社とは関係ありません。",
+        APP_NAME " " APP_VERSION, "Iconi")
 }
 
 ; ---------------------------------------------------------------------
@@ -200,7 +396,9 @@ ChooseAndApply(firstRun) {
     global APP_NAME
     hasGoogle := GimeInstalled()
     head := firstRun ? "起動しました。画面右下（タスクトレイ）にアイコンがあります。`n"
-        . "（見えないときは、右下の「^」を押すと出てきます）`n`n" : ""
+        . "（見えないときは、右下の「^」を押すと出てきます）`n`n"
+        . "対象：Claude・ChatGPT・Codex・Gemini・Copilot`n"
+        . "（アイコンを右クリック →「対象のアプリ」で1つずつオン／オフできます）`n`n" : ""
     msg := head
         . "日本語の変換中に Enter を押したとき、ちゃんと「確定」になるように、`n"
         . "日本語入力（IME）のキー設定を1か所だけ変更します。`n"
@@ -235,9 +433,9 @@ ChooseAndApply(firstRun) {
         return
     MsgBox(results
         . (doMs ? "`n※Microsoft IME の変更は、アプリを開き直すと反映されます。`n"
-                . "　Claude デスクトップアプリは「×」で閉じても裏で動き続けるので、`n"
-                . "　画面右下のClaudeのアイコンを右クリック →「終了（Quit）」で完全に終了してから、`n"
-                . "　もう一度開いてください。ブラウザの場合はブラウザを開き直してください。`n"
+                . "　Claude や ChatGPT などのデスクトップアプリは「×」で閉じても裏で動き続けることがあるので、`n"
+                . "　画面右下（タスクトレイ）のそのアプリのアイコンを右クリック →「終了（Quit）」で`n"
+                . "　完全に終了してから、もう一度開いてください。ブラウザの場合はブラウザを開き直してください。`n"
                 . "　（それでもだめならPCを再起動してください）" : ""),
         APP_NAME, "Iconi")
 }
@@ -284,7 +482,7 @@ RestoreAll() {
     if hasM
         out .= "Microsoft IME：" (MsimeRestore() ? "戻しました" : "戻せませんでした") "`n"
     MsgBox(out (hasM ? "`n※Microsoft IME は、アプリを開き直すと反映されます。`n"
-        . "　Claude デスクトップアプリは、画面右下のアイコンから完全に終了してから開き直してください。" : ""), APP_NAME, "Iconi")
+        . "　Claude や ChatGPT などのデスクトップアプリは、画面右下のアイコンから完全に終了してから開き直してください。" : ""), APP_NAME, "Iconi")
 }
 
 ; =====================================================================

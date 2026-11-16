@@ -1,8 +1,8 @@
-Claude Enter Swap - Third-party notices / 使っているもの
+AI Enter Swap (formerly Claude Enter Swap) - Third-party notices / 使っているもの
 =========================================================
 
 1. AutoHotkey v2 (2.0.31)
-   ClaudeEnterSwap.exe には AutoHotkey v2 の実行部分（AutoHotkey64.exe）が含まれています。
+   AIEnterSwap.exe には AutoHotkey v2 の実行部分（AutoHotkey64.exe）が含まれています。
    License : GNU General Public License v2.0 (GPL-2.0)
    Website : https://www.autohotkey.com/
    Source  : https://github.com/AutoHotkey/AutoHotkey
