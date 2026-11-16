@@ -1,0 +1,7 @@
+# 本人のIME設定のバックアップ（絶対に公開しない）
+_my-msime-backup/
+*.reg
+# ビルドで作られるもの
+main.ahk
+dist/
+release/
