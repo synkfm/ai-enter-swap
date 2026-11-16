@@ -5,3 +5,4 @@ _my-msime-backup/
 main.ahk
 dist/
 release/
+tools/*.png

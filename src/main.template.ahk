@@ -5,6 +5,7 @@
 ;@Ahk2Exe-SetVersion 1.2.0
 ;@Ahk2Exe-SetProductVersion 1.2.0
 ;@Ahk2Exe-SetOrigFilename ClaudeEnterSwap.exe
+;@Ahk2Exe-SetMainIcon src\icon.ico
 
 ; =====================================================================
 ;  Claude Enter Swap
